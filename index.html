@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#b5532a">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/zxing-wasm@2.2.0/dist/iife/reader/index.js"></script>
 <style>
 :root{--bg:#faf7f2;--card:#fff;--ink:#2b2622;--mut:#8a8178;--acc:#b5532a;--line:#e8e1d6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1917;--card:#292524;--ink:#f1ebe3;--mut:#a39a8f;--acc:#e07b4f;--line:#3a3532}}
@@ -43,8 +43,8 @@ button.sec{background:var(--card);color:var(--ink);border:1px solid var(--line)}
 <div class="panel">
   <div class="row"><button id="scanBtn">📷 Live scan</button><button id="photoBtn">📸 Photo scan</button></div>
   <button class="sec" id="addBtn" style="width:100%;margin-top:8px">＋ Add manually</button>
-  <input type="file" id="photo" accept="image/*" capture="environment" hidden><div id="reader2" style="position:absolute;left:-9999px;top:0;width:300px"></div>
-  <div id="reader" hidden style="margin-top:10px"></div>
+  <input type="file" id="photo" accept="image/*" capture="environment" hidden>
+  <div id="reader" hidden style="margin-top:10px"><video id="vid" playsinline muted style="width:100%;border-radius:12px;background:#000"></video></div>
   <div id="msg" class="note"></div>
   <div id="form" hidden>
     <input id="isbn" placeholder="ISBN" inputmode="numeric">
@@ -94,23 +94,30 @@ function showForm(isbn){$('form').hidden=false;$('isbn').value=isbn||'';$('title
     lookup(isbn).then(r=>{if($('isbn').value!==isbn)return;
       if(r){if(!$('title').value)$('title').value=r.title||'';if(!$('author').value)$('author').value=r.author||'';if(!$('cat').value)$('cat').value=r.cat||'';$('msg').textContent='Details found. Check them, pick a category, then save.'}
       else $('msg').textContent='No online match (or you are offline). Type the details in.'})}}
-function stopScan(){clearTimeout(window.hintT);if(scanner){scanner.stop().catch(()=>{}).finally(()=>{try{scanner.clear()}catch(e){}scanner=null});}$('reader').hidden=true;$('scanBtn').textContent='📷 Live scan'}
-
+let stream=null,loopOn=false;
+const OPTS={tryHarder:true,tryRotate:true,formats:['EAN-13'],maxNumberOfSymbols:1};
+const zx=()=>window.ZXingWASM&&ZXingWASM.readBarcodes;
+function pickIsbn(res){for(const r of res||[]){const t=(r.text||'').trim();if(validIsbn(t))return t}return null}
+function found(t){if(books.some(b=>b.isbn===t)){$('msg').textContent='Already in your library: '+t;return}showForm(t)}
+function stopScan(){loopOn=false;clearTimeout(window.hintT);if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('vid').srcObject=null;$('reader').hidden=true;$('scanBtn').textContent='📷 Live scan'}
 $('scanBtn').onclick=async()=>{
-  if(scanner){stopScan();return}
-  if(typeof Html5Qrcode==='undefined'){$('msg').textContent='Scanner failed to load. Add the ISBN manually.';return}
+  if(stream){stopScan();return}
+  if(!zx()){$('msg').textContent='Scanner library did not load (needs internet on first use). Try Photo scan or add manually.';return}
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false})}
+  catch(e){stream=null;$('msg').textContent='Live camera is blocked here. Use Photo scan instead.';return}
+  const v=$('vid');v.srcObject=stream;await v.play().catch(()=>{});
+  try{const tr=stream.getVideoTracks()[0],cap=tr.getCapabilities&&tr.getCapabilities();if(cap&&cap.focusMode&&cap.focusMode.includes('continuous'))await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(_){}
   $('reader').hidden=false;$('scanBtn').textContent='Stop scanning';$('msg').textContent='Point the camera at the barcode on the back cover.';
-  scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13],useBarCodeDetectorIfSupported:true,verbose:false});
-  clearTimeout(window.hintT);window.hintT=setTimeout(()=>{if(scanner)$('msg').textContent='Still looking… hold 10–15 cm away, keep the barcode flat and sharp, avoid glare. Or use Photo scan.'},8000);
-  try{
-    await scanner.start({facingMode:'environment'},{fps:15,qrbox:(w,h)=>({width:Math.floor(w*0.92),height:Math.floor(Math.min(h*0.6,w*0.5))}),videoConstraints:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080},advanced:[{focusMode:'continuous'}]}},
-      txt=>{
-        if(!validIsbn(txt))return;
-        stopScan();
-        if(books.some(b=>b.isbn===txt)){$('msg').textContent='Already in your library: '+txt;return}
-        $('msg').textContent='Scanned '+txt+'. Add the details below.';showForm(txt)
-      },()=>{});
-  }catch(e){stopScan();$('msg').textContent='Live camera is blocked here. Use Photo scan instead (it opens your normal camera app).'}
+  clearTimeout(window.hintT);window.hintT=setTimeout(()=>{if(stream)$('msg').textContent='Still looking… hold 10–15 cm away, keep it sharp and avoid glare. Or use Photo scan.'},8000);
+  loopOn=true;const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
+  while(loopOn){
+    if(v.videoWidth){
+      const sc=Math.min(1,1280/v.videoWidth);cv.width=Math.round(v.videoWidth*sc);cv.height=Math.round(v.videoHeight*sc);
+      cx.drawImage(v,0,0,cv.width,cv.height);
+      try{const t=pickIsbn(await ZXingWASM.readBarcodes(cx.getImageData(0,0,cv.width,cv.height),OPTS));if(t&&loopOn){stopScan();found(t);return}}catch(_){}
+    }
+    await new Promise(r=>setTimeout(r,60));
+  }
 };
 $('photoBtn').onclick=()=>{stopScan();$('photo').value='';$('photo').click()};
 async function loadBmp(f){
@@ -124,26 +131,15 @@ function mk(bmp,maxW,rot,filt){
   return new Promise(ok=>c.toBlob(b=>ok(b),'image/jpeg',0.92))}
 $('photo').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
+  if(!zx()){$('msg').textContent='Scanner library did not load (needs internet on first use). Add manually.';return}
   $('msg').textContent='Reading barcode…';
-  let found=null;
+  let t=null;
   try{
-    const bmp=await loadBmp(f);
-    if('BarcodeDetector' in window){try{const bd=new BarcodeDetector({formats:['ean_13']});const r=await bd.detect(bmp);if(r.length)found=r[0].rawValue}catch(_){}}
-    if(!found){
-      const h=new Html5Qrcode('reader2',{formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13],verbose:false});
-      const tries=[];for(const w of [1000,1600,640])for(const rot of [0,90])for(const fl of [false,true])tries.push([w,rot,fl]);
-      let n=0;
-      for(const [w,rot,fl] of tries){
-        n++;$('msg').textContent='Reading barcode… ('+n+'/'+tries.length+')';
-        await new Promise(r=>setTimeout(r,0));
-        try{const blob=await mk(bmp,w,rot,fl);const t=await h.scanFile(new File([blob],'b.jpg',{type:'image/jpeg'}),false);if(t&&validIsbn(t)){found=t;break}}catch(_){}
-      }
-      try{h.clear()}catch(_){}
-    }
-  }catch(err){$('msg').textContent='Could not read the photo: '+(err&&err.message||err);return}
-  if(!found){$('msg').textContent='No ISBN found. Retake with the barcode flat, filling the frame, in bright light (use the long ISBN barcode, not the small price one). Or type it in.';showForm('');return}
-  if(books.some(b=>b.isbn===found)){$('msg').textContent='Already in your library: '+found;return}
-  $('msg').textContent='Scanned '+found+'. Add the details below.';showForm(found);
+    t=pickIsbn(await ZXingWASM.readBarcodes(f,OPTS));
+    if(!t){const bmp=await loadBmp(f);for(const w of [1600,900]){const blob=await mk(bmp,w,0,false);t=pickIsbn(await ZXingWASM.readBarcodes(blob,OPTS));if(t)break}}
+  }catch(err){$('msg').textContent='Scanner could not run here (it needs to be hosted online). '+(err&&err.message||'');showForm('');return}
+  if(!t){$('msg').textContent='No ISBN found. Retake with the barcode filling the frame, or type it in.';showForm('');return}
+  found(t);
 };
 $('addBtn').onclick=()=>{stopScan();$('msg').textContent='';showForm('')};
 $('cancel').onclick=()=>{$('form').hidden=true;$('msg').textContent=''};
