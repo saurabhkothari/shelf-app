@@ -94,15 +94,16 @@ function showForm(isbn){$('form').hidden=false;$('isbn').value=isbn||'';$('title
     lookup(isbn).then(r=>{if($('isbn').value!==isbn)return;
       if(r){if(!$('title').value)$('title').value=r.title||'';if(!$('author').value)$('author').value=r.author||'';if(!$('cat').value)$('cat').value=r.cat||'';$('msg').textContent='Details found. Check them, pick a category, then save.'}
       else $('msg').textContent='No online match (or you are offline). Type the details in.'})}}
-function stopScan(){if(scanner){scanner.stop().catch(()=>{}).finally(()=>{try{scanner.clear()}catch(e){}scanner=null});}$('reader').hidden=true;$('scanBtn').textContent='📷 Live scan'}
+function stopScan(){clearTimeout(window.hintT);if(scanner){scanner.stop().catch(()=>{}).finally(()=>{try{scanner.clear()}catch(e){}scanner=null});}$('reader').hidden=true;$('scanBtn').textContent='📷 Live scan'}
 
 $('scanBtn').onclick=async()=>{
   if(scanner){stopScan();return}
   if(typeof Html5Qrcode==='undefined'){$('msg').textContent='Scanner failed to load. Add the ISBN manually.';return}
   $('reader').hidden=false;$('scanBtn').textContent='Stop scanning';$('msg').textContent='Point the camera at the barcode on the back cover.';
-  scanner=new Html5Qrcode('reader');
+  scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13],useBarCodeDetectorIfSupported:true,verbose:false});
+  clearTimeout(window.hintT);window.hintT=setTimeout(()=>{if(scanner)$('msg').textContent='Still looking… hold 10–15 cm away, keep the barcode flat and sharp, avoid glare. Or use Photo scan.'},8000);
   try{
-    await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:260,height:120},formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13]},
+    await scanner.start({facingMode:'environment'},{fps:15,qrbox:(w,h)=>({width:Math.floor(w*0.92),height:Math.floor(Math.min(h*0.6,w*0.5))}),videoConstraints:{facingMode:'environment',width:{ideal:1920},height:{ideal:1080},advanced:[{focusMode:'continuous'}]}},
       txt=>{
         if(!validIsbn(txt))return;
         stopScan();
