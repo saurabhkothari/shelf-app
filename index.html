@@ -32,6 +32,7 @@ button.sec{background:var(--card);color:var(--ink);border:1px solid var(--line)}
 #reader{width:100%;border-radius:12px;overflow:hidden;margin-bottom:8px}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:14px}
 .note{color:var(--mut);font-size:13px;margin:4px 0 8px}
+#scanBtn{width:100%;font-size:21px;padding:20px;border-radius:14px}
 .empty{text-align:center;color:var(--mut);padding:30px 0}
 </style>
 </head>
@@ -41,8 +42,8 @@ button.sec{background:var(--card);color:var(--ink);border:1px solid var(--line)}
 <div class="sub" id="count"></div>
 
 <div class="panel">
-  <div class="row"><button id="scanBtn">📷 Live scan</button><button id="photoBtn">📸 Photo scan</button></div>
-  <button class="sec" id="addBtn" style="width:100%;margin-top:8px">＋ Add manually</button>
+  <button id="scanBtn">📷 Scan a book</button>
+  <div class="row" style="margin-top:8px"><button class="sec" id="photoBtn">📸 Photo scan</button><button class="sec" id="addBtn">＋ Type it in</button></div>
   <input type="file" id="photo" accept="image/*" capture="environment" hidden>
   <div id="reader" hidden style="margin-top:10px"><video id="vid" playsinline muted style="width:100%;border-radius:12px;background:#000"></video></div>
   <div id="msg" class="note"></div>
@@ -89,17 +90,26 @@ async function lookup(isbn){
     if(v)return{title:v.title,author:(v.authors||[]).join(', '),cat:(v.categories||[])[0]||''};
   }catch(e){}finally{clearTimeout(to)}
   return null}
-function showForm(isbn){$('form').hidden=false;$('isbn').value=isbn||'';$('title').value='';$('author').value='';$('cat').value='';$('status').value='Unread';$('title').focus();
-  if(isbn){$('msg').textContent='Scanned '+isbn+'. Looking up details…';
+function showForm(isbn,skip){$('form').hidden=false;$('isbn').value=isbn||'';$('title').value='';$('author').value='';$('cat').value='';$('status').value='Unread';$('title').focus();
+  if(isbn&&skip){$('msg').textContent='Could not find this book online. Type the details in.'}
+  else if(isbn){$('msg').textContent='Scanned '+isbn+'. Looking up details…';
     lookup(isbn).then(r=>{if($('isbn').value!==isbn)return;
       if(r){if(!$('title').value)$('title').value=r.title||'';if(!$('author').value)$('author').value=r.author||'';if(!$('cat').value)$('cat').value=r.cat||'';$('msg').textContent='Details found. Check them, pick a category, then save.'}
       else $('msg').textContent='No online match (or you are offline). Type the details in.'})}}
-let stream=null,loopOn=false;
+const BTN='📷 Scan a book';let stream=null,loopOn=false;
+const FAST={tryHarder:false,tryRotate:false,formats:['EAN-13'],maxNumberOfSymbols:1};
 const OPTS={tryHarder:true,tryRotate:true,formats:['EAN-13'],maxNumberOfSymbols:1};
 const zx=()=>window.ZXingWASM&&ZXingWASM.readBarcodes;
 function pickIsbn(res){for(const r of res||[]){const t=(r.text||'').trim();if(validIsbn(t))return t}return null}
-function found(t){if(books.some(b=>b.isbn===t)){$('msg').textContent='Already in your library: '+t;return}showForm(t)}
-function stopScan(){loopOn=false;clearTimeout(window.hintT);if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('vid').srcObject=null;$('reader').hidden=true;$('scanBtn').textContent='📷 Live scan'}
+function cleanCat(c){return c&&c.length<=28&&!/accessible|protected|large type|in library|^nyt|^open library/i.test(c)?c:''}
+async function found(t){
+  if(books.some(b=>b.isbn===t)){$('msg').textContent='Already in your library ✔';return}
+  $('msg').textContent='Got it! Looking up the book…';
+  const r=await lookup(t);
+  if(r&&r.title){books.unshift({id:Date.now(),isbn:t,title:r.title,author:r.author||'',cat:cleanCat(r.cat)||'Uncategorised',status:'Unread'});persist();render();
+    $('msg').innerHTML='✅ Added: <b>'+esc(r.title)+'</b><br>Tap the category tag on the book to change it.';$('scanBtn').textContent='📷 Scan next book'}
+  else showForm(t,true)}
+function stopScan(){loopOn=false;clearTimeout(window.hintT);if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('vid').srcObject=null;$('reader').hidden=true;$('scanBtn').textContent=BTN}
 $('scanBtn').onclick=async()=>{
   if(stream){stopScan();return}
   if(!zx()){$('msg').textContent='Scanner library did not load (needs internet on first use). Try Photo scan or add manually.';return}
@@ -109,14 +119,23 @@ $('scanBtn').onclick=async()=>{
   try{const tr=stream.getVideoTracks()[0],cap=tr.getCapabilities&&tr.getCapabilities();if(cap&&cap.focusMode&&cap.focusMode.includes('continuous'))await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(_){}
   $('reader').hidden=false;$('scanBtn').textContent='Stop scanning';$('msg').textContent='Point the camera at the barcode on the back cover.';
   clearTimeout(window.hintT);window.hintT=setTimeout(()=>{if(stream)$('msg').textContent='Still looking… hold 10–15 cm away, keep it sharp and avoid glare. Or use Photo scan.'},8000);
-  loopOn=true;const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
+  let nd=null;try{if('BarcodeDetector' in window)nd=new BarcodeDetector({formats:['ean_13']})}catch(_){}
+  loopOn=true;const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});let n=0;
   while(loopOn){
     if(v.videoWidth){
-      const sc=Math.min(1,1280/v.videoWidth);cv.width=Math.round(v.videoWidth*sc);cv.height=Math.round(v.videoHeight*sc);
-      cx.drawImage(v,0,0,cv.width,cv.height);
-      try{const t=pickIsbn(await ZXingWASM.readBarcodes(cx.getImageData(0,0,cv.width,cv.height),OPTS));if(t&&loopOn){stopScan();found(t);return}}catch(_){}
+      try{
+        let t=null;
+        if(nd){try{t=pickIsbn((await nd.detect(v)).map(x=>({text:x.rawValue})))}catch(_){nd=null}}
+        if(!nd&&!t){
+          const heavy=(n++%4===3),vw=v.videoWidth,vh=v.videoHeight,sy=heavy?0:Math.round(vh*0.2),sh=heavy?vh:Math.round(vh*0.6);
+          const sc=Math.min(1,(heavy?1100:800)/vw);cv.width=Math.round(vw*sc);cv.height=Math.round(sh*sc);
+          cx.drawImage(v,0,sy,vw,sh,0,0,cv.width,cv.height);
+          t=pickIsbn(await ZXingWASM.readBarcodes(cx.getImageData(0,0,cv.width,cv.height),heavy?OPTS:FAST));
+        }
+        if(t&&loopOn){stopScan();found(t);return}
+      }catch(_){}
     }
-    await new Promise(r=>setTimeout(r,60));
+    await new Promise(r=>setTimeout(r,30));
   }
 };
 $('photoBtn').onclick=()=>{stopScan();$('photo').value='';$('photo').click()};
@@ -165,15 +184,17 @@ function render(){
   chips($('stChips'),['All','Unread','Reading','Read'],fSt,v=>fSt=v);
   const q=$('q').value.toLowerCase();
   const rows=books.filter(b=>(fCat==='All'||b.cat===fCat)&&(fSt==='All'||b.status===fSt)&&(!q||(b.title+b.author+b.isbn).toLowerCase().includes(q)));
-  $('list').innerHTML=rows.length?rows.map(b=>`<div class="book"><button class="x" data-del="${b.id}" aria-label="Delete">×</button><b>${esc(b.title)}</b><span class="meta">${esc(b.author)||'Unknown author'}${b.isbn?' · '+esc(b.isbn):''}</span><br><span class="tag">${esc(b.cat)}</span><span class="tag" data-cy="${b.id}" style="cursor:pointer">${esc(b.status)} ↻</span></div>`).join(''):'<div class="empty">No books yet. Scan one to start.</div>';
+  $('list').innerHTML=rows.length?rows.map(b=>`<div class="book"><button class="x" data-del="${b.id}" aria-label="Delete">×</button><b>${esc(b.title)}</b><span class="meta">${esc(b.author)||'Unknown author'}${b.isbn?' · '+esc(b.isbn):''}</span><br><span class="tag" data-ec="${b.id}" style="cursor:pointer">${esc(b.cat)} ✎</span><span class="tag" data-cy="${b.id}" style="cursor:pointer">${esc(b.status)} ↻</span></div>`).join(''):'<div class="empty">No books yet. Scan one to start.</div>';
 }
 $('list').onclick=e=>{
-  const d=e.target.dataset.del,c=e.target.dataset.cy;
+  const d=e.target.dataset.del,c=e.target.dataset.cy,ec=e.target.dataset.ec;
+  if(ec){const b=books.find(b=>b.id==ec),v=prompt('Category for this book:',b.cat);if(v&&v.trim()){b.cat=v.trim();persist();render()}}
   if(d){books=books.filter(b=>b.id!=d);persist();render()}
   if(c){const b=books.find(b=>b.id==c),s=['Unread','Reading','Read'];b.status=s[(s.indexOf(b.status)+1)%3];persist();render()}
 };
 render();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+setTimeout(()=>{try{if(zx())ZXingWASM.readBarcodes(new ImageData(8,8),FAST).catch(()=>{})}catch(_){}},300);
 </script>
 </body>
 </html>
