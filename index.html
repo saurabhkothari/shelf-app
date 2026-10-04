@@ -33,6 +33,8 @@ button.sec{background:var(--card);color:var(--ink);border:1px solid var(--line)}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:14px}
 .note{color:var(--mut);font-size:13px;margin:4px 0 8px}
 #scanBtn{width:100%;font-size:21px;padding:20px;border-radius:14px}
+.lnk{display:block;text-align:center;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--acc);font-weight:600;text-decoration:none;margin-bottom:8px}
+.lnk[hidden]{display:none}
 .empty{text-align:center;color:var(--mut);padding:30px 0}
 </style>
 </head>
@@ -49,7 +51,9 @@ button.sec{background:var(--card);color:var(--ink);border:1px solid var(--line)}
   <div id="msg" class="note"></div>
   <div id="form" hidden>
     <input id="isbn" placeholder="ISBN" inputmode="numeric">
+    <a id="webLook" class="lnk" href="#" target="_blank" rel="noopener" hidden>🔎 Look up this ISBN on ISBNsearch.org</a>
     <input id="title" placeholder="Title">
+    <button class="sec" id="pasteT" style="width:100%;margin-bottom:8px">📋 Paste copied title</button>
     <input id="author" placeholder="Author">
     <div class="row">
       <input id="cat" list="cats" placeholder="Category">
@@ -79,19 +83,41 @@ function validIsbn(s){s=s.replace(/[-\s]/g,'');
   if(/^\d{9}[\dX]$/.test(s)){let t=0;for(let i=0;i<10;i++)t+=(s[i]=='X'?10:+s[i])*(10-i);return t%11==0}
   return false}
 
+function toIsbn10(i){if(!/^978\d{10}$/.test(i))return null;const d=i.slice(3,12);let t=0;for(let k=0;k<9;k++)t+=(10-k)*d[k];const c=(11-t%11)%11;return d+(c==10?'X':c)}
 async function lookup(isbn){
-  const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),7000);
-  try{
-    let r=await fetch('https://openlibrary.org/api/books?bibkeys=ISBN:'+isbn+'&format=json&jscmd=data',{signal:ctl.signal});
-    let j=await r.json(),d=j['ISBN:'+isbn];
-    if(d)return{title:d.title+(d.subtitle?': '+d.subtitle:''),author:(d.authors||[]).map(a=>a.name).join(', '),cat:(d.subjects&&d.subjects[0]&&d.subjects[0].name)||''};
-    r=await fetch('https://www.googleapis.com/books/v1/volumes?q=isbn:'+isbn,{signal:ctl.signal});
-    j=await r.json();const v=j.items&&j.items[0]&&j.items[0].volumeInfo;
-    if(v)return{title:v.title,author:(v.authors||[]).join(', '),cat:(v.categories||[])[0]||''};
-  }catch(e){}finally{clearTimeout(to)}
-  return null}
-function showForm(isbn,skip){$('form').hidden=false;$('isbn').value=isbn||'';$('title').value='';$('author').value='';$('cat').value='';$('status').value='Unread';$('title').focus();
-  if(isbn&&skip){$('msg').textContent='Could not find this book online. Type the details in.'}
+  const ctl=new AbortController(),o={signal:ctl.signal},i10=toIsbn10(isbn),ids=[isbn,i10].filter(Boolean);
+  const J=u=>fetch(u,o).then(r=>r.ok?r.json():null).catch(()=>null);
+  const arr=x=>Array.isArray(x)?x:(x?[x]:[]);
+  const mk=(t,a,c)=>t?{title:String(t).trim(),author:String(a||'').trim(),cat:arr(c).map(x=>typeof x==='string'?x:x&&x.name).find(cleanCat)||''}:null;
+  const S=[
+    async()=>{const j=await J('https://openlibrary.org/api/books?bibkeys='+ids.map(i=>'ISBN:'+i).join(',')+'&format=json&jscmd=data');if(!j)return null;for(const k in j){const d=j[k];if(d&&d.title)return mk(d.title+(d.subtitle?': '+d.subtitle:''),(d.authors||[]).map(a=>a.name).join(', '),d.subjects)}return null},
+    ...ids.map(i=>async()=>{const j=await J('https://www.googleapis.com/books/v1/volumes?q=isbn:'+i);const v=j&&j.items&&j.items[0]&&j.items[0].volumeInfo;return v&&v.title?mk(v.title+(v.subtitle?': '+v.subtitle:''),arr(v.authors).join(', '),v.categories):null}),
+    ...ids.map(i=>async()=>{const j=await J('https://openlibrary.org/search.json?isbn='+i+'&fields=title,author_name,subject&limit=1');const d=j&&j.docs&&j.docs[0];return d?mk(d.title,arr(d.author_name).join(', '),d.subject):null}),
+    ...ids.map(i=>async()=>{const j=await J('https://openlibrary.org/isbn/'+i+'.json');return j&&j.title?mk(j.title+(j.subtitle?': '+j.subtitle:''),String(j.by_statement||'').replace(/\.$/,''),j.subjects):null}),
+    ...ids.map(i=>async()=>{const j=await J('https://archive.org/advancedsearch.php?q=isbn%3A'+i+'&fl%5B%5D=title&fl%5B%5D=creator&fl%5B%5D=subject&rows=1&output=json');const d=j&&j.response&&j.response.docs&&j.response.docs[0];return d?mk(arr(d.title)[0],arr(d.creator).join(', '),d.subject):null}),
+    ...ids.map(i=>async()=>{const j=await J('https://api.crossref.org/works?filter=isbn:'+i+'&rows=1');const d=j&&j.message&&j.message.items&&j.message.items[0];return d&&d.title?mk(arr(d.title)[0],arr(d.author).map(a=>[a.given,a.family].filter(Boolean).join(' ')).join(', '),d.subject):null}),
+    ...ids.map(i=>async()=>{const j=await J('https://catalog.hathitrust.org/api/volumes/brief/isbn/'+i+'.json');const r=j&&j.records&&Object.values(j.records)[0];return r&&r.titles&&r.titles[0]?mk(r.titles[0],'',[]):null})
+  ];
+  return new Promise(done=>{
+    const got=[];let left=S.length,fin=false,tm=null;
+    const end=()=>{if(fin)return;fin=true;clearTimeout(tm);clearTimeout(hard);ctl.abort();
+      const rs=got.sort((x,y)=>x.idx-y.idx).map(x=>x.r);
+      done(rs.length?{title:rs[0].title,author:(rs.find(x=>x.author)||{}).author||'',cat:(rs.find(x=>x.cat)||{}).cat||''}:null)};
+    const hard=setTimeout(end,10000);
+    S.forEach((f,idx)=>f().then(r=>{if(r){got.push({idx,r});if(!tm)tm=setTimeout(end,1500)}}).catch(()=>{}).finally(()=>{if(--left===0)end()}));
+  })}
+let retrying=false;
+async function retryPending(){
+  if(retrying||!navigator.onLine)return;retrying=true;
+  for(const b of books.filter(x=>x.pending&&x.isbn)){
+    const r=await lookup(b.isbn);
+    if(r&&r.title&&b.pending){b.title=r.title;b.author=r.author||'';if(b.cat==='Uncategorised'&&cleanCat(r.cat))b.cat=cleanCat(r.cat);b.pending=false;persist();render()}
+  }
+  retrying=false}
+window.addEventListener('online',retryPending);
+function setWeb(){const i=$('isbn').value.replace(/[-\s]/g,'');$('webLook').hidden=!i;$('webLook').href='https://isbnsearch.org/isbn/'+i}
+function showForm(isbn,skip){$('form').hidden=false;$('isbn').value=isbn||'';$('title').value='';$('author').value='';$('cat').value='';$('status').value='Unread';$('title').focus();setWeb();
+  if(isbn&&skip){$('msg').textContent='Not found online (newer or regional books are often missing). Tap 🔎 below to look it up, then type the title. The ISBN is already saved.'}
   else if(isbn){$('msg').textContent='Scanned '+isbn+'. Looking up details…';
     lookup(isbn).then(r=>{if($('isbn').value!==isbn)return;
       if(r){if(!$('title').value)$('title').value=r.title||'';if(!$('author').value)$('author').value=r.author||'';if(!$('cat').value)$('cat').value=r.cat||'';$('msg').textContent='Details found. Check them, pick a category, then save.'}
@@ -108,7 +134,8 @@ async function found(t){
   const r=await lookup(t);
   if(r&&r.title){books.unshift({id:Date.now(),isbn:t,title:r.title,author:r.author||'',cat:cleanCat(r.cat)||'Uncategorised',status:'Unread'});persist();render();
     $('msg').innerHTML='✅ Added: <b>'+esc(r.title)+'</b><br>Tap the category tag on the book to change it.';$('scanBtn').textContent='📷 Scan next book'}
-  else showForm(t,true)}
+  else{books.unshift({id:Date.now(),isbn:t,title:'Untitled ('+t+')',author:'',cat:'Uncategorised',status:'Unread',pending:true});persist();render();
+    $('msg').innerHTML='📖 Saved! No free source knew this book yet. It will keep retrying. Tap the title ✎ to name it yourself.';$('scanBtn').textContent='📷 Scan next book'}}
 function stopScan(){loopOn=false;clearTimeout(window.hintT);if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}$('vid').srcObject=null;$('reader').hidden=true;$('scanBtn').textContent=BTN}
 $('scanBtn').onclick=async()=>{
   if(stream){stopScan();return}
@@ -163,13 +190,14 @@ $('photo').onchange=async e=>{
 $('addBtn').onclick=()=>{stopScan();$('msg').textContent='';showForm('')};
 $('cancel').onclick=()=>{$('form').hidden=true;$('msg').textContent=''};
 $('save').onclick=()=>{
-  const title=$('title').value.trim(),isbn=$('isbn').value.replace(/[-\s]/g,'');
+  const isbn=$('isbn').value.replace(/[-\s]/g,''),title=$('title').value.trim()||(isbn?'Untitled ('+isbn+')':'');
   if(!title){$('msg').textContent='Title is required.';return}
   if(isbn&&books.some(b=>b.isbn===isbn)){$('msg').textContent='That ISBN is already saved.';return}
   books.unshift({id:Date.now(),isbn,title,author:$('author').value.trim(),cat:$('cat').value.trim()||'Uncategorised',status:$('status').value});
   persist();$('form').hidden=true;$('msg').textContent='Saved ✓';render()
 };
-$('q').oninput=render;
+$('pasteT').onclick=async()=>{try{const t=(await navigator.clipboard.readText()).trim();if(t){$('title').value=t.slice(0,200);$('msg').textContent='Title pasted ✓'}else $('msg').textContent='Nothing copied yet.'}catch(e){$('msg').textContent='Paste not allowed. Long-press the title box and tap Paste.'}};
+$('q').oninput=render;$('isbn').oninput=setWeb;
 $('exp').onclick=()=>{const t=JSON.stringify(books,null,2);navigator.clipboard?.writeText(t).then(()=>$('msg').textContent='Library copied to clipboard as JSON.').catch(()=>$('msg').textContent='Copy not allowed here.')};
 
 function chips(el,vals,cur,set){el.innerHTML=vals.map(v=>`<span class="chip ${v===cur?'on':''}" data-v="${esc(v)}">${esc(v)}</span>`).join('');
@@ -184,15 +212,17 @@ function render(){
   chips($('stChips'),['All','Unread','Reading','Read'],fSt,v=>fSt=v);
   const q=$('q').value.toLowerCase();
   const rows=books.filter(b=>(fCat==='All'||b.cat===fCat)&&(fSt==='All'||b.status===fSt)&&(!q||(b.title+b.author+b.isbn).toLowerCase().includes(q)));
-  $('list').innerHTML=rows.length?rows.map(b=>`<div class="book"><button class="x" data-del="${b.id}" aria-label="Delete">×</button><b>${esc(b.title)}</b><span class="meta">${esc(b.author)||'Unknown author'}${b.isbn?' · '+esc(b.isbn):''}</span><br><span class="tag" data-ec="${b.id}" style="cursor:pointer">${esc(b.cat)} ✎</span><span class="tag" data-cy="${b.id}" style="cursor:pointer">${esc(b.status)} ↻</span></div>`).join(''):'<div class="empty">No books yet. Scan one to start.</div>';
+  $('list').innerHTML=rows.length?rows.map(b=>`<div class="book"><button class="x" data-del="${b.id}" aria-label="Delete">×</button><b data-et="${b.id}" style="cursor:pointer">${esc(b.title)} ✎</b><span class="meta">${esc(b.author)||'Unknown author'}${b.isbn?' · '+esc(b.isbn):''}</span>${b.pending?`<br><a class="meta" target="_blank" rel="noopener" href="https://isbnsearch.org/isbn/${esc(b.isbn)}">🔎 Not found yet – look up manually</a>`:''}<br><span class="tag" data-ec="${b.id}" style="cursor:pointer">${esc(b.cat)} ✎</span><span class="tag" data-cy="${b.id}" style="cursor:pointer">${esc(b.status)} ↻</span></div>`).join(''):'<div class="empty">No books yet. Scan one to start.</div>';
 }
 $('list').onclick=e=>{
-  const d=e.target.dataset.del,c=e.target.dataset.cy,ec=e.target.dataset.ec;
+  const d=e.target.dataset.del,c=e.target.dataset.cy,ec=e.target.dataset.ec,et=e.target.dataset.et;
+  if(et){const b=books.find(b=>b.id==et),v=prompt('Book title:',b.title);if(v&&v.trim()){b.title=v.trim();b.pending=false;persist();render()}}
   if(ec){const b=books.find(b=>b.id==ec),v=prompt('Category for this book:',b.cat);if(v&&v.trim()){b.cat=v.trim();persist();render()}}
   if(d){books=books.filter(b=>b.id!=d);persist();render()}
   if(c){const b=books.find(b=>b.id==c),s=['Unread','Reading','Read'];b.status=s[(s.indexOf(b.status)+1)%3];persist();render()}
 };
 render();
+setTimeout(retryPending,2000);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 setTimeout(()=>{try{if(zx())ZXingWASM.readBarcodes(new ImageData(8,8),FAST).catch(()=>{})}catch(_){}},300);
 </script>
